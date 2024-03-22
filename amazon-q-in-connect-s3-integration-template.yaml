@@ -1,0 +1,661 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+    Amazon Q in Connect - S3 Integration Template (v2024-03-21)
+    This AWS CloudFormation Template will create:
+    1) Amazon S3 Bucket - Store Knowledgebase Content
+    2) Amazon Q in Connect - Domain/Assistant, KnowledgeBase, Assistant Association
+    3) AWS AppIntegrations:DataIntegration between the KnowledgeBase and Amazon S3.
+    4) AWS KMS Key (CMK) to encrypt Amazon Q in Connect content
+    5) Amazon Connect Contact Flow with Contact Lens and Amazon Q in Connect
+
+Metadata:
+  Version: "2024-03-21"
+  Author: "Taylan Unal <taylauna@amazon.com>"
+
+Parameters:
+  AmazonConnectInstanceARN:
+    Type: String
+    Description: "Enter your Amazon Connect Instance ARN - https://docs.aws.amazon.com/connect/latest/adminguide/find-instance-arn.html"
+    Default: "arn:aws:connect:REGION:ACCOUNTID:instance/INSTANCEID"
+
+  AmazonS3BucketName:
+    Type: String
+    Description: Provide a valid, globally unique name for the Amazon S3 Bucket to store Knowledge Base Files. (ex. s3-instance-alias-qconnect-bucket-1234)
+    AllowedPattern: '(?=^.{3,63}$)(?!^(\d+\.)+\d+$)(^(([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])\.)*([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])$)'
+    ConstraintDescription: 'Invalid Amazon S3 Bucket name - https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html'
+
+Outputs:
+  # Section 1: AWS KMS Key
+  QConnectKMSKeyArn:
+    Description: "Amazon Q in Connect KMS Key"
+    Value: !GetAtt QConnectKey.Arn
+  
+  # Section 2: Amazon S3 Bucket
+  AmazonS3BucketARN:
+    Description: "Amazon S3 Bucket ARN"
+    Value: !GetAtt QConnectS3Bucket.Arn
+
+  # Section 3: Amazon AppIntegrations-DataIntegrations
+  QConnectS3AppIntegrationARN:
+    Description: "Amazon Q in Connect S3 App Integration ARN"
+    Value: !GetAtt QConnectS3DataIntegration.DataIntegrationArn
+  
+  # Section 4: Amazon Connect - Domain/Assistant, KnowledgeBase, Assistant Association  Amazon Q in Connect Resources
+  QConnectAssistantARN:
+    Description: "Amazon Q in Connect Assistant ARN"
+    Value: !GetAtt QConnectAssistant.AssistantArn
+  QConnectKnowledgeBaseARN:
+    Description: "Amazon Q in Connect Knowledgebase ARN"
+    Value: !GetAtt QConnectKnowledgeBase.KnowledgeBaseArn
+
+  # Section 5: Amazon Connect - QConnect Integration
+  QConnectIntegrationLambdaARN:
+    Description: "Amazon Connect - QConnect Integration Lambda Function ARN"
+    Value: !GetAtt QConnectIntegration.Arn
+
+  # Section 6: Amazon Connect Contact Flow Outputs (Only if "DeployAgentAssistFlow" is set to "Yes")
+  QueueName:
+    Description: Amazon Connect Queue Name
+    Value: !GetAtt InvokeGetQueueInfoFunction.QueueName
+  QueueArn:
+    Description: Amazon Connect Queue Arn
+    Value: !GetAtt InvokeGetQueueInfoFunction.QueueArn
+  QueueId:
+    Description: Amazon Connect Queue Id
+    Value: !GetAtt InvokeGetQueueInfoFunction.QueueId
+  
+  AgentAssistContactFlowARN:
+    Description: Realtime Agent Assist Contact Flow ARN (Contact Lens + Amazon Q in Connect)
+    Value: !GetAtt RealtimeAgentAssistFlow.ContactFlowArn
+  AgentAssistContactFlowName:
+    Description: Realtime Agent Assist Contact Flow Name (Contact Lens + Amazon Q in Connect)
+    Value: !Sub 
+      - "RealtimeAgentAssistFlow-${UUID}"
+      - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+
+Resources:
+  # ****
+  # Section 1: AWS KMS Key
+  # Description: This KMS Key allows full access to the root user, allows the Connect service access to decrypt, generate data keys, and describe the key to enable Q in Connect Permissions.
+  # Outputs: Ref: Returns Key ID. !GetAtt: .Arn || .KeyId
+  # ****
+  QConnectKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      Enabled: true
+      EnableKeyRotation: true
+      Description: !Sub "Amazon Q in Connect KMS Key - Deployed by Stack ${AWS::StackName}"
+      Origin: AWS_KMS
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: amazon-q-connect-key-policy
+        Statement:
+          - Sid: Enable IAM User Permissions 
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow Amazon Connect service access
+            Effect: Allow
+            Principal:
+              Service: ["connect.amazonaws.com", "sns.amazonaws.com"]
+            Action: 
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant # Required for Knowledgebase ServerSideEncryptionConfiguration
+            Resource: '*'
+
+  # ****
+  # Section 2: Amazon S3 Bucket 
+  # Description: Create a new Amazon S3 Bucket to store Knowledge Content for Amazon Q in Connect.
+  # Outputs: Ref -> Bucket Name. !GetAtt: .Arn || .DomainName || .DualStackDomainName || .RegionalDomainName || .WebsiteURL
+  # ****
+  QConnectS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref AmazonS3BucketName
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      PublicAccessBlockConfiguration: # Block all public access
+        BlockPublicAcls: True
+        IgnorePublicAcls: True
+        BlockPublicPolicy: True
+        RestrictPublicBuckets: True 
+      # (Optional) Enabling Amazon S3 Bucket Versioning is a best practice to ensure bucket objects can be reverted. (QIC UpdateContent API call can reference version to function correctly.)
+      VersioningConfiguration: 
+        Status: Enabled # Suspended | Enabled
+      # Bucket Encryption Docs: https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingServerSideEncryption.html
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  
+  # Amazon S3 Bucket Policy - enable AppIntegrations Access to S3 Bucket.
+  # IMPORTANT: The bucket policy of the corresponding S3 bucket must allow the AWS principal app-integrations.amazonaws.com to perform s3:ListBucket, s3:GetObject, and s3:GetBucketLocation against the bucket. (https://docs.aws.amazon.com/amazon-q-connect/latest/APIReference/API_AppIntegrationsConfiguration.html)
+  QConnectS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Delete 
+    UpdateReplacePolicy: Retain
+    Properties: 
+      Bucket: !Ref AmazonS3BucketName # The name of the Amazon S3 bucket to which the policy applies.
+      PolicyDocument:
+        Version: '2012-10-17' 
+        Statement:
+          - Sid: AllowAppIntegrationsAccess
+            Effect: Allow
+            Principal:
+              Service: app-integrations.amazonaws.com
+            Action:
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "arn:aws:s3:::${AmazonS3BucketName}"
+              - !Sub "arn:aws:s3:::${AmazonS3BucketName}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref 'AWS::AccountId'
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:app-integrations:${AWS::Region}:${AWS::AccountId}:data-integration/*'
+  
+  # ****
+  # Section 3: AppIntegrations-DataIntegrations
+  # Outputs: Ref -> DataIntegration Name. !GetAtt: .DataIntegrationArn || .Id
+  # *IMPORTANT:* 
+  # - For DataIntegrations with Amazon S3, the FileConfiguration, ObjectConfiguration, and ScheduleConfig parameters for your AppIntegrations DataIntegration must be null. 
+  # - The SourceURI of your DataIntegration must use the following format: s3://your_s3_bucket_name. (https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-wisdom-knowledgebase-appintegrationsconfiguration.html#aws-properties-wisdom-knowledgebase-appintegrationsconfiguration-properties)
+  # - The name of the AppIntegrations DataIntegration must be the same name as the AmazonQConnect/Wisdom KnowledgeBase.
+  # ****
+  QConnectS3DataIntegration:
+    Type: AWS::AppIntegrations::DataIntegration
+    DeletionPolicy: Delete 
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub
+        - 'QConnect-KnowledgeBase-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Description: Amazon Q in Connect - S3 AppIntegrations-DataIntegration
+      # ** IMPORTANT NOTE: Provide Key ARN instead of KeyId**
+      KmsKey: !GetAtt QConnectKey.Arn # The KMS key ARN for the DataIntegration.
+      SourceURI: !Sub "s3://${AmazonS3BucketName}" # Required. URI of the Amazon S3 Bucket. (ex. s3://your_s3_bucket_name)
+
+  # ****
+  # Section 4: Create Amazon Q in Connect CloudFormation Resources
+  # Description: Create an Amazon Q in Connect/Wisdom Assistant, KnowledgeBase, and AssistantAssociation (Assistant<->KnowledgeBase)
+  # ****
+  # Amazon Q in Connect Assistant
+  # Outputs: !Ref -> AssistantId. !GetAtt AssistantArn, AssistantId
+  QConnectAssistant:
+    Type: AWS::Wisdom::Assistant
+    DeletionPolicy: Delete 
+    UpdateReplacePolicy: Retain
+    Properties: 
+      Name: !Sub 
+        - 'QConnect-Assistant-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Type: "AGENT"
+      Description: !Sub "Amazon Q in Connect Assistant - Deployment Stack: ${AWS::StackName}"
+      ServerSideEncryptionConfiguration:
+        KmsKeyId: !Ref QConnectKey
+
+  # Amazon Q in Connect KnowledgeBase (Integrate with Amazon S3 using AppIntegrations-DataIntegration)
+  # Output: !Ref -> KnowledgebaseId. !GetAtt KnowledgeBaseArn, KnowledgeBaseId
+  # *IMPORTANT:* 
+  # - For DataIntegrations with Amazon S3, the FileConfiguration, ObjectConfiguration, and ScheduleConfig parameters for your AppIntegrations DataIntegration must be null. 
+  # - The name of the AmazonQConnect/Wisdom KnowledgeBase must be the same as the Amazon AppIntegrations-DataIntegration.
+  # ****
+  QConnectKnowledgeBase:
+    Type: AWS::Wisdom::KnowledgeBase
+    DeletionPolicy: Delete 
+    UpdateReplacePolicy: Retain
+    Properties: 
+      Name: !Sub 
+        - 'QConnect-KnowledgeBase-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Description: !Sub "Amazon Q in Connect Knowledge Base - Deployment Stack: ${AWS::StackName}"
+      KnowledgeBaseType: "EXTERNAL" # CUSTOM | EXTERNAL
+      ServerSideEncryptionConfiguration: 
+        KmsKeyId: !Ref QConnectKey
+      SourceConfiguration: 
+        AppIntegrations: 
+          AppIntegrationArn: !GetAtt QConnectS3DataIntegration.DataIntegrationArn
+
+  # Create Assistant Association between Assistant and Knowledgebase
+  # Outputs: !GetAtt - AssistantArn, AssistantAssociationArn, AssistantAssociationId
+  QConnectAssistantAssociation:
+    Type: AWS::Wisdom::AssistantAssociation
+    DeletionPolicy: Delete 
+    UpdateReplacePolicy: Retain
+    Properties: 
+      AssistantId: !GetAtt QConnectAssistant.AssistantId
+      Association: 
+        KnowledgeBaseId: !GetAtt QConnectKnowledgeBase.KnowledgeBaseId
+      AssociationType: "KNOWLEDGE_BASE"
+
+  # ****
+  # Section 5: Integrate Amazon Connect with Amazon Q in Connect Resources
+  # Docs: https://docs.aws.amazon.com/connect/latest/APIReference/API_CreateIntegrationAssociation.html
+  # Required Parameters: AmazonConnectInstanceARN, QConnectAssistantARN, QConnectKnowledgeBaseARN
+  # ****
+  # AWS CloudFormation Custom Resource - Invoke Q in Connect Integration Handler
+  InvokeQConnectIntegration:
+    Type: "Custom::InvokeQConnectIntegration"
+    Properties:
+      ServiceToken: !GetAtt QConnectIntegration.Arn
+      INSTANCE_ARN: !Ref AmazonConnectInstanceARN
+      QCONNECT_ASSISTANT_ARN: !GetAtt QConnectAssistant.AssistantArn
+      QCONNECT_KNOWLEDGE_BASE_ARN: !GetAtt QConnectKnowledgeBase.KnowledgeBaseArn
+
+  # AWS Lambda Function - Connect Wisdom Integration Handler
+  QConnectIntegrationRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      RoleName: !Sub
+        - 'ConnectQIntegrationRole-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: QConnectIntegrationPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # IAM Policy to allow Lambda to update Service Linked Roles
+              - Effect: Allow
+                Action:
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/connect.amazonaws.com/*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/wisdom.amazonaws.com/*'
+              - Effect: Allow
+                Action:
+                  - connect:DescribeInstance
+                  - connect:CreateIntegrationAssociation
+                  - connect:ListIntegrationAssociations
+                  - connect:DeleteIntegrationAssociation
+                  - connect:ListTagsForResource
+                  - connect:TagResource
+                  - connect:UntagResource
+                Resource:
+                  - !Sub '${AmazonConnectInstanceARN}'
+                  - !Sub '${AmazonConnectInstanceARN}/integration-association/*'
+              - Effect: Allow
+                Action:
+                  - wisdom:ListAssistantAssociations
+                  - wisdom:GetAssistant
+                  - wisdom:GetKnowledgeBase
+                  - wisdom:CreateAssistantAssociation
+                  - wisdom:DeleteAssistant
+                  - wisdom:DeleteKnowledgeBase
+                  - wisdom:DeleteAssistantAssociation
+                Resource:
+                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/*'
+                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:knowledge-base/*'
+                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:association/*/*' 
+              - Effect: Allow
+                Action:
+                  - ds:DescribeDirectories # Required for connect:DescribeInstance, connect:ListIntegrationAssociations
+                  - wisdom:ListAssistants
+                  - wisdom:ListKnowledgeBases
+                  - wisdom:CreateAssistant
+                  - wisdom:CreateKnowledgeBase
+                  - wisdom:ListTagsForResource
+                  - wisdom:TagResource
+                  - wisdom:UntagResource
+                Resource:
+                  - "*" # required for these APIs, as they have to take effect on all resources.   
+
+  # AWS Lambda: Amazon Connect - Amazon Q in Connect Integration Handler        
+  QConnectIntegration:
+    Type: 'AWS::Lambda::Function'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: 'QConnectIntegration: Handler for Amazon Connect - Amazon Q in Connect Integration'
+      FunctionName: !Sub
+        - 'QConnectIntegration-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+      Architectures:
+        - arm64
+      Role: !GetAtt QConnectIntegrationRole.Arn
+      MemorySize: 256
+      Timeout: 15
+      Code:
+        ZipFile: |
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: MIT-0
+          # Description: (v2024-03-21) Amazon Connect Integration with Amazon Q in Connect (Assistant and KnowledgeBase)
+
+          # Core Python Imports (Logging, HTTP). License: https://docs.python.org/3/license.html
+          import json
+          import logging
+          import urllib3
+
+          # AWS SDK (boto3) Imports. License: https://github.com/boto/boto3/blob/develop/LICENSE
+          import boto3
+          import botocore
+
+          # Initialize global variables
+          logger = logging.getLogger()
+          logger.setLevel("INFO")
+          http = urllib3.PoolManager()
+          CONNECT_CLIENT = boto3.client('connect')
+
+          def lambda_handler(event, context):
+              logger.info("Event Received: %s", json.dumps(event))
+              logger.info("Request Type: %s", event.get('RequestType'))
+              logger.info("Resource Properties: %s", json.dumps(event.get("ResourceProperties")))
+
+              # Handle Input Data from CloudFormation Resource Properties
+              physical_resource_id = event.get('ResourceProperties').get('ServiceToken')
+              instance_arn = event.get('ResourceProperties').get('INSTANCE_ARN')
+              qconnect_assistant_arn = event.get('ResourceProperties').get('QCONNECT_ASSISTANT_ARN')
+              qconnect_knowledge_base_arn = event.get('ResourceProperties').get('QCONNECT_KNOWLEDGE_BASE_ARN')
+
+              # Check for existing Integrations: List Integration Association - QConnect Assistant / Knowledge Base
+              connect_assistant_integration = list_integration_associations(instance_arn, "WISDOM_ASSISTANT")
+              connect_knowledge_base_integration = list_integration_associations(instance_arn, "WISDOM_KNOWLEDGE_BASE")
+              logger.info("Connect Integration - QConnect Assistant: %s", json.dumps(connect_assistant_integration))
+              logger.info("Connect Integration - QConnect Knowledgebase: %s", json.dumps(connect_knowledge_base_integration))
+
+              # Define ResponseData Expected by CloudFormation Response:
+              response_data = {
+                  "QConnect_Assistant_ARN": "",
+                  "QConnect_Assistant_IntegrationAssociationARN": "",
+                  "QConnect_KnowledgeBase_ARN": "",
+                  "QConnect_KnowledgeBase_IntegrationAssociationARN": "",
+              }
+
+              # Case 1: CloudFormation Stack sends Create or Update Event.
+              if event["RequestType"] in ["Create", "Update"]:
+                  # Step 1: Remove any existing QConnect Assistant/KnowledgeBase Integrations
+                  if connect_assistant_integration:
+                      logger.info("Connect Instance: %s has an existing Amazon Q in Connect - Assistant Integration", instance_arn)
+                      logger.info("Delete QConnect Assistant Integration: %s", connect_assistant_integration[0]["IntegrationAssociationId"])
+                      delete_integration_association(instance_arn, connect_assistant_integration[0]["IntegrationAssociationId"])
+
+                  if connect_knowledge_base_integration:
+                      logger.info("Connect Instance: %s has an existing Amazon Q in Connect - KnowledgeBase Integration", instance_arn)
+                      logger.info("Delete QConnect KnowledgeBase Integration: %s", connect_knowledge_base_integration[0]["IntegrationAssociationId"])
+                      delete_integration_association(instance_arn, connect_knowledge_base_integration[0]["IntegrationAssociationId"])
+
+                  # Step 2: Create new Integration Associations with provided QConnect Assistant and Knowledge Base
+                  if qconnect_assistant_arn:
+                      response = create_integration_association(instance_arn, qconnect_assistant_arn, 'WISDOM_ASSISTANT')
+                      logger.info("Connect Integration - QConnect Assistant. Create Integration Association Response: %s", response)
+                      if response['status'] == "SUCCESS":
+                          response_data["QConnect_Assistant_IntegrationAssociationARN"] = response['IntegrationAssociationArn']
+                          response_data["QConnect_Assistant_ARN"] = qconnect_assistant_arn
+                  else:
+                      logger.info("QConnect Assistant ARN not provided. Skipping Create Integration Association.")
+
+                  if qconnect_knowledge_base_arn:
+                      response = create_integration_association(instance_arn, qconnect_knowledge_base_arn, 'WISDOM_KNOWLEDGE_BASE')
+                      logger.info("Connect Integration - QConnect KnowledgeBase. Create Integration Association Response: %s", response)
+                      if response['status'] == "SUCCESS":
+                          response_data["QConnect_KnowledgeBase_IntegrationAssociationARN"] = response['IntegrationAssociationArn']
+                          response_data["QConnect_KnowledgeBase_ARN"] = qconnect_knowledge_base_arn
+                  else:
+                      logger.info("QConnect KnowledgeBase ARN not provided. Skipping Create Integration Association.")
+
+                  # Send CFN Response
+                  logger.info("Create/Update - QConnect Integration Handler Response: %s", json.dumps(response_data))
+                  send(event, context, "SUCCESS", response_data, physical_resource_id)
+                  return response_data
+
+              # Case 2: CloudFormation Stack sends DELETE signal - Delete Connect Integration Associations.
+              if event["RequestType"] == "Delete":
+                  # Delete only the Integration Association where the qconnect_assistant_arn is defined as the "IntegrationArn"
+                  if qconnect_assistant_arn and connect_assistant_integration:
+                      for integration in connect_assistant_integration:
+                          if integration["IntegrationArn"] == qconnect_assistant_arn:
+                              logger.info("Delete QConnect Assistant Integration: %s", integration["IntegrationAssociationId"])
+                              delete_integration_association(instance_arn, integration["IntegrationAssociationId"])
+
+                  # Delete only the Integration Association where the qconnect_knowledge_base_arn is defined as the "IntegrationArn"
+                  if qconnect_knowledge_base_arn and connect_knowledge_base_integration:
+                      for integration in connect_knowledge_base_integration:
+                          if integration["IntegrationArn"] == qconnect_knowledge_base_arn:
+                              logger.info("Delete QConnect KnowledgeBase Integration: %s", integration["IntegrationAssociationId"])
+                              delete_integration_association(instance_arn, integration["IntegrationAssociationId"])
+
+                  # Send CFN Response
+                  logger.info("Delete - QConnect Integration Response: %s", json.dumps(response_data))
+                  send(event, context, "SUCCESS", response_data, physical_resource_id)
+                  return response_data
+
+          # List Amazon Connect Instance Integration Associations (Accepts either Instance ID or ARN)
+          # https://docs.aws.amazon.com/connect/latest/APIReference/API_ListIntegrationAssociations.html
+          def list_integration_associations(instance_id, integration_type):
+              try:
+                  response = CONNECT_CLIENT.list_integration_associations(InstanceId=instance_id, IntegrationType=integration_type)
+                  return response["IntegrationAssociationSummaryList"]
+              except botocore.exceptions.ClientError as e:
+                  logger.error("Client Error: %s", e)
+                  return []
+              except Exception as e:
+                  logger.error("Exception: %s", e)
+                  return []
+
+          # Integrates a WISDOM_KNOWLEDGE_BASE or WISDOM_ASSISTANT with an Amazon Connect Instance
+          # https://docs.aws.amazon.com/connect/latest/APIReference/API_CreateIntegrationAssociation.html
+          def create_integration_association(instance_id, integration_arn, integration_type):
+              logger.info("Creating Integration Association between Connect Instance: %s and the QConnect Resource: %s with Integration Type: %s", instance_id, integration_arn, integration_type)
+              try:
+                  response = CONNECT_CLIENT.create_integration_association(InstanceId=instance_id, IntegrationArn=integration_arn, IntegrationType=integration_type)
+                  response["status"] = "SUCCESS"
+                  return response
+              except botocore.exceptions.ClientError as e:
+                  logger.error("Client Error: %s", e)
+                  return {'status': "CLIENT_ERROR", 'Message': str(e)}
+              except Exception as e:
+                  logger.error("Exception: %s", e)
+                  return {'status': "EXCEPTION", 'Message': str(e)}
+
+          # Delete a Connect - Wisdom Integration Association (Assistant or KnowledgeBase)
+          # https://docs.aws.amazon.com/connect/latest/APIReference/API_DeleteIntegrationAssociation.html
+          def delete_integration_association(instance_id, integration_association_id):
+              logger.info("Deleting Integration Association between Connect Instance: %s and the QConnect Integration: %s", instance_id, integration_association_id)
+              try:
+                  CONNECT_CLIENT.delete_integration_association(InstanceId=instance_id, IntegrationAssociationId=integration_association_id)
+                  return {'status': "SUCCESS", 'Message': f"Integration Association {integration_association_id} deleted successfully"}
+              except botocore.exceptions.ClientError as e:
+                  logger.error("Client Error: %s", e)
+                  return {'status': "CLIENT_ERROR", 'Message': str(e)}
+              except Exception as e:
+                  logger.error("Exception: %s", e)
+                  return {'status': "EXCEPTION", 'Message': str(e)}
+
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: MIT-0
+          # CloudFormation Response Helper Function: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-lambda-function-code-cfnresponsemodule.html
+          def send(event, context, response_status, response_data, physical_resource_id=None, no_echo=False, reason=None):
+              response_url = event['ResponseURL']
+              logger.info("Response URL: %s", response_url)
+
+              response_body = {
+                  'Status': response_status,
+                  'Reason': reason or f"See the details in CloudWatch Log Stream: {context.log_stream_name}",
+                  'PhysicalResourceId': physical_resource_id or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'NoEcho': no_echo,
+                  'Data': response_data
+              }
+              json_response_body = json.dumps(response_body)
+              logger.info("Response body: %s", json_response_body)
+
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(json_response_body))
+              }
+
+              try:
+                  response = http.request('PUT', response_url, headers=headers, body=json_response_body)
+                  logger.info("Status code: %s", response.status)
+              except Exception as e:
+                  logger.error("send(..) failed executing http.request(..):%s", e)
+
+# ****
+# Section 6: Agent Assist Contact Flow
+# Required Parameters: AmazonConnectInstanceARN (Parameters), QConnectAssistantARN (Resources), QueueARN (Resources)
+# ****
+  # Custom Resource - Execute GetQueueInfo Function
+  InvokeGetQueueInfoFunction:
+    Type: Custom::GetQueueInfoFunction
+    Properties:
+      ServiceToken: !GetAtt GetQueueInfoFunction.Arn
+      AmazonConnectInstanceARN: !Ref AmazonConnectInstanceARN
+      QueueName: "BasicQueue"
+
+  GetQueueInfoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: GetQueueInfoPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Sid: "DescribeConnectStatement"
+                Action:
+                  - connect:DescribeQueue
+                Resource: # Describe Operations require instance/[RESOURCE]/* access
+                  - !Sub "${AmazonConnectInstanceARN}/queue/*"
+              - Effect: Allow
+                Sid: "SearchConnectStatement"
+                Action:
+                  - connect:SearchQueues
+                Resource: # List/Search Operations requires 'instance/*' access
+                  - !Sub "${AmazonConnectInstanceARN}" # Full instance required for Routing Profiles and SecurityProfiles
+                  - !Sub "${AmazonConnectInstanceARN}/*" # '/*' required for Queues and Hours of Operation
+
+  GetQueueInfoFunction:
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Sub 
+        - 'GetQueueInfo-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Description: 'GetQueueInfo: Returns Amazon Connect Queue attributes'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      RuntimeManagementConfig:
+        UpdateRuntimeOn: Auto
+      Architectures:
+        - arm64
+      Role: !GetAtt GetQueueInfoRole.Arn
+      MemorySize: 256
+      Timeout: 15
+      Code:
+        ZipFile: |
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: MIT-0
+          # Description: (v2024.03.19) This AWS Lambda Custom Resource function will return attributes of a specified Amazon Connect Queue.
+          import cfnresponse
+          import json
+          import logging
+          import boto3
+
+          # Initialize global variables
+          logger = logging.getLogger()
+          logger.setLevel("INFO")
+          connect_client = boto3.client('connect')
+
+          def lambda_handler(event, context):
+              logger.info("Received event: %s", json.dumps(event))
+              request_type = event.get('RequestType')
+
+              if request_type in ('Create', 'Update'):
+                  instance_arn = event['ResourceProperties']['AmazonConnectInstanceARN']
+                  instance_id = instance_arn.split('/')[-1]
+                  queue_name = event['ResourceProperties']['QueueName']
+
+                  # Search Amazon Connect Queues with exact match for name field.
+                  # https://docs.aws.amazon.com/connect/latest/APIReference/API_SearchQueues.html
+                  response = connect_client.search_queues(
+                      InstanceId=instance_id,
+                      SearchCriteria={
+                          'StringCondition': {
+                              'FieldName': 'name',
+                              'Value': queue_name,
+                              'ComparisonType': 'EXACT'
+                          },
+                      }
+                  )
+
+                  queues = response.get("Queues", [])
+                  if not queues:
+                      logger.info(f"Queue with name {queue_name} was not found.")
+                      return None
+
+                  # Return the first queue in the list of Queues returned by the SearchQueues API.
+                  queue_info = queues[0]
+                  logger.info("Queue Found: %s", queue_info)
+                  response_data = {
+                      "QueueName": queue_info.get("Name") or "None",
+                      "QueueArn": queue_info.get("QueueArn"),
+                      "QueueId": queue_info.get("QueueId"),
+                  }
+              elif request_type == 'Delete':
+                  response_data = {}
+              else:
+                  raise ValueError(f'Unsupported RequestType: {request_type}')
+
+              # Send CFN Response and return ResponseData
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              return response_data
+
+  RealtimeAgentAssistFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      Type: CONTACT_FLOW
+      InstanceArn: !Ref 'AmazonConnectInstanceARN'
+      Name: !Sub 
+        - "RealtimeAgentAssistFlow-${UUID}"
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Description: !Sub "Realtime Agent Assist Flow (Contact Lens + Amazon Q in Connect) - Deployment Stack: ${AWS::StackName}"
+      Content: !Sub
+        - "{\"Version\":\"2019-10-30\",\"StartAction\":\"6af924da-53e0-4f1a-bfce-0bfada482e7a\",\"Metadata\":{\"entryPointPosition\":{\"x\":40,\"y\":40},\"ActionMetadata\":{\"6f68229d-1905-4f13-9404-75fe3e9ab03d\":{\"position\":{\"x\":810.4,\"y\":301.6}},\"85ba7d4c-fcef-4687-9ba4-2c343e010858\":{\"position\":{\"x\":811.2,\"y\":66.4}},\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\":{\"position\":{\"x\":586.4,\"y\":267.2}},\"Welcome Prompt\":{\"position\":{\"x\":139.2,\"y\":266.4},\"isFriendlyName\":true},\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\":{\"position\":{\"x\":369.6,\"y\":268.8},\"parameters\":{\"QueueId\":{\"useDynamic\":true}},\"useDynamic\":true},\"d498d82c-9605-4917-94e3-97ff69a45f41\":{\"position\":{\"x\":580,\"y\":37.6},\"children\":[\"9335fb94-80dd-439a-956d-54634ea1c49b\"],\"parameters\":{\"WisdomAssistantArn\":{\"displayName\":\"${QConnectAssistantARN}\"}},\"fragments\":{\"SetContactData\":\"9335fb94-80dd-439a-956d-54634ea1c49b\"}},\"9335fb94-80dd-439a-956d-54634ea1c49b\":{\"position\":{\"x\":580,\"y\":37.6},\"dynamicParams\":[]},\"6af924da-53e0-4f1a-bfce-0bfada482e7a\":{\"position\":{\"x\":150.4,\"y\":22.4}},\"Set Flow Attributes\":{\"position\":{\"x\":366.4,\"y\":43.2},\"isFriendlyName\":true,\"dynamicParams\":[]}},\"Annotations\":[]},\"Actions\":[{\"Parameters\":{},\"Identifier\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"Type\":\"DisconnectParticipant\",\"Transitions\":{}},{\"Parameters\":{\"RecordingBehavior\":{\"RecordedParticipants\":[\"Agent\",\"Customer\"],\"ScreenRecordedParticipants\":[\"Agent\"]},\"AnalyticsBehavior\":{\"Enabled\":\"True\",\"AnalyticsLanguage\":\"en-US\",\"AnalyticsRedactionBehavior\":\"Disabled\",\"AnalyticsRedactionResults\":\"RedactedAndOriginal\",\"ChannelConfiguration\":{\"Chat\":{\"AnalyticsModes\":[\"ContactLens\"]},\"Voice\":{\"AnalyticsModes\":[\"RealTime\"]}}}},\"Identifier\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"Type\":\"UpdateContactRecordingBehavior\",\"Transitions\":{\"NextAction\":\"Welcome Prompt\"}},{\"Parameters\":{},\"Identifier\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"Type\":\"TransferContactToQueue\",\"Transitions\":{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"Errors\":[{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"ErrorType\":\"QueueAtCapacity\"},{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"Text\":\"Welcome to the Amazon Connect Analytics and Agent Assist Flow\"},\"Identifier\":\"Welcome Prompt\",\"Type\":\"MessageParticipant\",\"Transitions\":{\"NextAction\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"Errors\":[{\"NextAction\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"QueueId\":\"$.Attributes.QueueARN\"},\"Identifier\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"Type\":\"UpdateContactTargetQueue\",\"Transitions\":{\"NextAction\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"Errors\":[{\"NextAction\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"WisdomAssistantArn\":\"${QConnectAssistantARN}\"},\"Identifier\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"Type\":\"CreateWisdomSession\",\"Transitions\":{\"NextAction\":\"9335fb94-80dd-439a-956d-54634ea1c49b\",\"Errors\":[{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"WisdomSessionArn\":\"$.Wisdom.SessionArn\"},\"Identifier\":\"9335fb94-80dd-439a-956d-54634ea1c49b\",\"Type\":\"UpdateContactData\",\"Transitions\":{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"Errors\":[{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"FlowLoggingBehavior\":\"Enabled\"},\"Identifier\":\"6af924da-53e0-4f1a-bfce-0bfada482e7a\",\"Type\":\"UpdateFlowLoggingBehavior\",\"Transitions\":{\"NextAction\":\"Set Flow Attributes\"}},{\"Parameters\":{\"Attributes\":{\"QueueARN\":\"${QueueARN}\",\"QConnectAssistantARN\":\"${QConnectAssistantARN}\"},\"TargetContact\":\"Current\"},\"Identifier\":\"Set Flow Attributes\",\"Type\":\"UpdateContactAttributes\",\"Transitions\":{\"NextAction\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"Errors\":[{\"NextAction\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"ErrorType\":\"NoMatchingError\"}]}}]}"
+        - QueueARN: !GetAtt InvokeGetQueueInfoFunction.QueueArn
+          QConnectAssistantARN: !GetAtt QConnectAssistant.AssistantArn

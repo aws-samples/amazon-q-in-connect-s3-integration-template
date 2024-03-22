@@ -1,0 +1,61 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+    Amazon Connect - Realtime Agent Assist Contact Flow (Contact Lens and Amazon Q in Connect)
+    This template will deploy an Amazon Connect Contact Flow to the Amazon Connect Instance with Contact Lens and Amazon Q in Connect enabled, aimed to accelerate customers adopting Real-time Agent Assist Capabilities.
+Metadata:
+  Version: "2024-03-21"
+  Author: "Taylan Unal <taylauna@amazon.com>"
+
+Parameters:
+##################################################### 
+# (OPTIONAL) Amazon Q in Connect - Contact Flow
+#####################################################
+  AmazonConnectInstanceARN:
+    Type: String
+    Description: Enter your Amazon Connect Instance ARN - To find your Instance ARN, visit https://docs.aws.amazon.com/connect/latest/adminguide/find-instance-arn.html
+    Default: arn:aws:connect:REGION:ACCOUNTID:instance/INSTANCEID
+
+  QueueARN:
+    Type: String
+    Description: Enter your Queue ARN - To find your Queue ARN, visit https://docs.aws.amazon.com/connect/latest/adminguide/set-working-queue.html#set-working-queue-properties)
+    Default: "arn:aws:connect:REGION:ACCOUNTID:instance/INSTANCEID/queue/QUEUEID"
+  
+  # AmazonQConnect Assistant ARN (https://docs.aws.amazon.com/amazon-q-connect/latest/APIReference/API_AssistantData.html)
+  AmazonQConnectAssistantARN:
+    Type: String
+    Default: arn:aws:wisdom:REGION:ACCOUNTID:assistant/ASSISTANTID
+    Description: "Amazon Q in Connect Assistant ARN (Find your Assistant ARN using https://docs.aws.amazon.com/amazon-q-connect/latest/APIReference/API_ListAssistants.html)"
+    # AllowedPattern: "^arn:[a-z-]*?:wisdom:[a-z0-9-]*?:[0-9]{12}:[a-z-]*?/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?:/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?$"
+
+Outputs:
+  AgentAssistContactFlowARN:
+    Description: Realtime Agent Assist Contact Flow ARN (Contact Lens + Amazon Q in Connect)
+    Value: !GetAtt RealtimeAgentAssistFlow.ContactFlowArn
+  AgentAssistContactFlowName:
+    Description: "Agent Assist (Amazon Q in Connect) Contact Flow Name"
+    Value: !Sub 
+      - "RealtimeAgentAssistFlow-${UUID}"
+      - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+
+Resources:
+# ****
+# Realtime Agent Assist Contact Flow (Contact Lens + Amazon Q in Connect)
+# CloudFormation - Contact Flow Documentation: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-connect-contactflow.html
+# Required Parameters: AmazonConnectInstanceARN (Parameters), QConnectAssistantARN (Resources), QueueARN (Resources)
+# * NOTE: After 'describe-contact-flow', manually replace 'arn:wisdom:...' with '${QConnectAssistantARN}'. (Regex: `arn:aws:wisdom:[a-z-\d]+:[\d]+:[a-z\d]+\/[a-z-\d]+`)
+# ****
+  RealtimeAgentAssistFlow:
+    Type: AWS::Connect::ContactFlow
+    Properties:
+      Type: CONTACT_FLOW
+      InstanceArn: !Ref 'AmazonConnectInstanceARN'
+      Name: !Sub 
+        - "RealtimeAgentAssistFlow-${UUID}"
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      Description: !Sub "Realtime Agent Assist Flow - Deployed by ${AWS::StackName}"
+      Content: !Sub
+        - "{\"Version\":\"2019-10-30\",\"StartAction\":\"6af924da-53e0-4f1a-bfce-0bfada482e7a\",\"Metadata\":{\"entryPointPosition\":{\"x\":40,\"y\":40},\"ActionMetadata\":{\"6f68229d-1905-4f13-9404-75fe3e9ab03d\":{\"position\":{\"x\":810.4,\"y\":301.6}},\"85ba7d4c-fcef-4687-9ba4-2c343e010858\":{\"position\":{\"x\":811.2,\"y\":66.4}},\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\":{\"position\":{\"x\":586.4,\"y\":267.2}},\"Welcome Prompt\":{\"position\":{\"x\":139.2,\"y\":266.4},\"isFriendlyName\":true},\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\":{\"position\":{\"x\":369.6,\"y\":268.8},\"parameters\":{\"QueueId\":{\"useDynamic\":true}},\"useDynamic\":true},\"6af924da-53e0-4f1a-bfce-0bfada482e7a\":{\"position\":{\"x\":141.6,\"y\":41.6}},\"d498d82c-9605-4917-94e3-97ff69a45f41\":{\"position\":{\"x\":580,\"y\":37.6},\"children\":[\"86e829a9-13b1-4787-9e63-6a40378da027\"],\"parameters\":{\"WisdomAssistantArn\":{\"displayName\":\"${QConnectAssistantARN}\"}},\"fragments\":{\"SetContactData\":\"86e829a9-13b1-4787-9e63-6a40378da027\"}},\"86e829a9-13b1-4787-9e63-6a40378da027\":{\"position\":{\"x\":580,\"y\":37.6},\"dynamicParams\":[]},\"Set Flow Attributes\":{\"position\":{\"x\":366.4,\"y\":43.2},\"isFriendlyName\":true,\"dynamicParams\":[]}},\"Annotations\":[]},\"Actions\":[{\"Parameters\":{},\"Identifier\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"Type\":\"DisconnectParticipant\",\"Transitions\":{}},{\"Parameters\":{\"RecordingBehavior\":{\"RecordedParticipants\":[\"Agent\",\"Customer\"],\"ScreenRecordedParticipants\":[\"Agent\"]},\"AnalyticsBehavior\":{\"Enabled\":\"True\",\"AnalyticsLanguage\":\"en-US\",\"AnalyticsRedactionBehavior\":\"Disabled\",\"AnalyticsRedactionResults\":\"RedactedAndOriginal\",\"ChannelConfiguration\":{\"Chat\":{\"AnalyticsModes\":[\"ContactLens\"]},\"Voice\":{\"AnalyticsModes\":[\"RealTime\"]}}}},\"Identifier\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"Type\":\"UpdateContactRecordingBehavior\",\"Transitions\":{\"NextAction\":\"Welcome Prompt\"}},{\"Parameters\":{},\"Identifier\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"Type\":\"TransferContactToQueue\",\"Transitions\":{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"Errors\":[{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"ErrorType\":\"QueueAtCapacity\"},{\"NextAction\":\"6f68229d-1905-4f13-9404-75fe3e9ab03d\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"Text\":\"Welcome to the Amazon Connect Analytics and Agent Assist Flow\"},\"Identifier\":\"Welcome Prompt\",\"Type\":\"MessageParticipant\",\"Transitions\":{\"NextAction\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"Errors\":[{\"NextAction\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"QueueId\":\"$.Attributes.QueueARN\"},\"Identifier\":\"8829d06f-e2a3-4bf2-a580-7d8326bc2570\",\"Type\":\"UpdateContactTargetQueue\",\"Transitions\":{\"NextAction\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"Errors\":[{\"NextAction\":\"6d19cd0b-fd6b-45d4-8e26-42723edb0699\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"FlowLoggingBehavior\":\"Enabled\"},\"Identifier\":\"6af924da-53e0-4f1a-bfce-0bfada482e7a\",\"Type\":\"UpdateFlowLoggingBehavior\",\"Transitions\":{\"NextAction\":\"Set Flow Attributes\"}},{\"Parameters\":{\"WisdomAssistantArn\":\"${QConnectAssistantARN}\"},\"Identifier\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"Type\":\"CreateWisdomSession\",\"Transitions\":{\"NextAction\":\"86e829a9-13b1-4787-9e63-6a40378da027\",\"Errors\":[{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"WisdomSessionArn\":\"$.Wisdom.SessionArn\"},\"Identifier\":\"86e829a9-13b1-4787-9e63-6a40378da027\",\"Type\":\"UpdateContactData\",\"Transitions\":{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"Errors\":[{\"NextAction\":\"85ba7d4c-fcef-4687-9ba4-2c343e010858\",\"ErrorType\":\"NoMatchingError\"}]}},{\"Parameters\":{\"Attributes\":{\"QueueARN\":\"${QueueARN}\",\"QConnectAssistantARN\":\"${QConnectAssistantARN}\"},\"TargetContact\":\"Current\"},\"Identifier\":\"Set Flow Attributes\",\"Type\":\"UpdateContactAttributes\",\"Transitions\":{\"NextAction\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"Errors\":[{\"NextAction\":\"d498d82c-9605-4917-94e3-97ff69a45f41\",\"ErrorType\":\"NoMatchingError\"}]}}]}"
+        - QueueARN: !Ref QueueARN
+          QConnectAssistantARN: !Ref AmazonQConnectAssistantARN

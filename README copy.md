@@ -112,7 +112,8 @@ This Deployment **WILL NOT:**
 In this section, we will deploy an AWS CloudFormation template that will create Amazon Connect Wisdom constructs, integrate those Wisdom resources with an Amazon Connect Instance, and deploy the required artifacts to use Amazon S3 as a knowledge base for Amazon Connect Wisdom.
 
 **Step 1: Download the `Amazon Q in Connect S3 Sync` CloudFormation Template**
-Navigate to the repository root directory, and open the `amazon-q-in-connect-s3-integration-template.yaml` file and [download](https://docs.github.com/en/repositories/working-with-files/using-files/viewing-a-file#viewing-or-copying-the-raw-file-content) the file to your local machine.
+Navigate to the `amazon-q-wisdom-s3-sync` repository root directory.
+Open the `amazon-q-in-connect-s3-integration-template.yaml` file and [download](https://docs.github.com/en/repositories/working-with-files/using-files/viewing-a-file#viewing-or-copying-the-raw-file-content) the file to your local machine.
 
 **Step 2: Navigate to AWS CloudFormation**
 Navigate to AWS CloudFormation on your AWS Management Console (Ex. https://us-east-1.console.aws.amazon.com/cloudformation/)
@@ -134,6 +135,10 @@ In this section, we'll specify the After selecting a stack template, specify the
 3. `S3BucketName`: Provide a globally unique name for a new Amazon S3 Bucket, which will be used to store knowledge content for Amazon Q in Connect.
    1. Do **not** enter an existing S3 bucket. This process will create a new one in the account, and will require you to retry the process if a S3 bucket with this name already exists. 
    2. We recommend making this value unique, such as `s3-amazon-q-in-connect-bucket` as long as the name is less than 63 characters and all lowercase. You can find all the S3 bucket naming rules [here.](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html)
+<!-- 4. `DeployAgentAssistFlow` (Option Y/N): Deploy an Amazon Connect Contact Flow pre-configured with your Amazon Q in Connect Assistant
+   1. By default, this option will be set to "Yes"
+   2. **NOTE:** After deployment, please navigate to your Contact Flow and set your preferred Queue to route Contacts to in the `Set working queue` block.
+   3. NOTE: To enable Real-time Recommendations with Amazon Q in Connect, this contact flow will enable Contact Lens Real-time Analytics for Voice/Chat Interactions. -->
 
 After configuring your Stack name and parameters, click the `Next` button to continue. 
 
