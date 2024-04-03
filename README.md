@@ -1,5 +1,11 @@
 ## Amazon Q in Connect - S3 Integration Template
 
+> Amazon Q in Connect features a native Integration with Amazon S3. Please refer to the Amazon Connect Admin Guide: https://docs.aws.amazon.com/connect/latest/adminguide/enable-q.html to enable Amazon Q in Connect and Integrate with Amazon S3.
+
+> This repository is sample code to migrate customers away from using the deprecated [amazon-connect-wisdom-s3-sync](https://github.com/aws-samples/amazon-connect-wisdom-s3-sync) deployments.
+
+---
+
 **Table of Contents**
 - [Amazon Q in Connect - S3 Integration Template](#amazon-q-in-connect---s3-integration-template)
 - [Description](#description)
