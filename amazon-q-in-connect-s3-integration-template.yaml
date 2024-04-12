@@ -32,6 +32,10 @@ Outputs:
     Description: "Amazon Q in Connect KMS Key"
     Value: !GetAtt QConnectKey.Arn
   
+  QConnectKMSKeyAlias:
+    Description: "Amazon Q in Connect KMS Key Alias"
+    Value: !Ref QConnectKeyAlias
+  
   # Section 2: Amazon S3 Bucket
   AmazonS3BucketARN:
     Description: "Amazon S3 Bucket ARN"
@@ -111,7 +115,16 @@ Resources:
               - kms:DescribeKey
               - kms:CreateGrant # Required for Knowledgebase ServerSideEncryptionConfiguration
             Resource: '*'
-
+  
+  # (Optional) Define Key Alias for KMS Key (for ease of Administration)
+  QConnectKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 
+        - 'alias/amazonqconnect-key-${AWS::Region}-${UUID}'
+        - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
+      TargetKeyId: !GetAtt QConnectKey.KeyId
+  
   # ****
   # Section 2: Amazon S3 Bucket 
   # Description: Create a new Amazon S3 Bucket to store Knowledge Content for Amazon Q in Connect.
@@ -263,7 +276,7 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       RoleName: !Sub
-        - 'ConnectQIntegrationRole-${UUID}'
+        - 'QConnectIntegrationRole-${UUID}'
         - UUID: !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
