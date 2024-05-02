@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-    Amazon Q in Connect - S3 Integration Template (v2024-04-30)
+    Amazon Q in Connect - S3 Integration Template (2024-05-02)
     This AWS CloudFormation Template will create:
     1) Amazon S3 Bucket - Store Knowledgebase Content
     2) Amazon Q in Connect - Domain/Assistant, KnowledgeBase, Assistant Association
@@ -11,7 +11,7 @@ Description: >
     5) Amazon Connect Contact Flow with Contact Lens and Amazon Q in Connect
 
 Metadata:
-  Version: "2024-04-30"
+  Version: "2024-05-02"
   Author: "Taylan Unal <taylauna@amazon.com>"
 
 Parameters:
@@ -173,13 +173,13 @@ Resources:
               - s3:GetObject
               - s3:GetBucketLocation
             Resource:
-              - !Sub "arn:aws:s3:::${AmazonS3BucketName}"
-              - !Sub "arn:aws:s3:::${AmazonS3BucketName}/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${AmazonS3BucketName}"
+              - !Sub "arn:${AWS::Partition}:s3:::${AmazonS3BucketName}/*"
             Condition:
               StringEquals:
                 aws:SourceAccount: !Ref 'AWS::AccountId'
               ArnLike:
-                aws:SourceArn: !Sub 'arn:aws:app-integrations:${AWS::Region}:${AWS::AccountId}:data-integration/*'
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:app-integrations:${AWS::Region}:${AWS::AccountId}:data-integration/*'
   
   # ****
   # Section 3: AppIntegrations-DataIntegrations
@@ -332,9 +332,9 @@ Resources:
                   - wisdom:DeleteKnowledgeBase
                   - wisdom:DeleteAssistantAssociation
                 Resource:
-                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/*'
-                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:knowledge-base/*'
-                  - !Sub 'arn:aws:wisdom:${AWS::Region}:${AWS::AccountId}:association/*/*' 
+                  - !Sub 'arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:assistant/*'
+                  - !Sub 'arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:knowledge-base/*'
+                  - !Sub 'arn:${AWS::Partition}:wisdom:${AWS::Region}:${AWS::AccountId}:association/*/*' 
               - Effect: Allow
                 Action:
                   - ds:DescribeDirectories # Required for connect:DescribeInstance, connect:ListIntegrationAssociations
