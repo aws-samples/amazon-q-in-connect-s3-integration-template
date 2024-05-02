@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-    Amazon Q in Connect - S3 Integration Template (v2024-03-21)
+    Amazon Q in Connect - S3 Integration Template (v2024-04-30)
     This AWS CloudFormation Template will create:
     1) Amazon S3 Bucket - Store Knowledgebase Content
     2) Amazon Q in Connect - Domain/Assistant, KnowledgeBase, Assistant Association
@@ -11,7 +11,7 @@ Description: >
     5) Amazon Connect Contact Flow with Contact Lens and Amazon Q in Connect
 
 Metadata:
-  Version: "2024-03-21"
+  Version: "2024-04-30"
   Author: "Taylan Unal <taylauna@amazon.com>"
 
 Parameters:
@@ -102,7 +102,7 @@ Resources:
           - Sid: Enable IAM User Permissions 
             Effect: Allow
             Principal:
-              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
             Action: kms:*
             Resource: '*'
           - Sid: Allow Amazon Connect service access
@@ -269,7 +269,7 @@ Resources:
       QCONNECT_ASSISTANT_ARN: !GetAtt QConnectAssistant.AssistantArn
       QCONNECT_KNOWLEDGE_BASE_ARN: !GetAtt QConnectKnowledgeBase.KnowledgeBaseArn
 
-  # AWS Lambda Function - Connect Wisdom Integration Handler
+  # AWS Lambda Function - Amazon Connect - Q in Connect Integration Handler
   QConnectIntegrationRole:
     Type: AWS::IAM::Role
     DeletionPolicy: Delete
@@ -288,12 +288,19 @@ Resources:
             Action:
               - sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: QConnectIntegrationPolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # IAM Policy to allow creating KMS Key Grant
+              - Sid: AllowCreateGrant
+                Effect: Allow
+                Action:
+                  - kms:CreateGrant
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${QConnectKey}' # Full ARN Definition or use GetAtt QConnectKey.Arn
               # IAM Policy to allow Lambda to update Service Linked Roles
               - Effect: Allow
                 Action:
@@ -301,8 +308,8 @@ Resources:
                   - iam:DeleteRolePolicy
                   - iam:AttachRolePolicy
                 Resource:
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/connect.amazonaws.com/*'
-                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/wisdom.amazonaws.com/*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/connect.amazonaws.com/*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/wisdom.amazonaws.com/*'
               - Effect: Allow
                 Action:
                   - connect:DescribeInstance
@@ -364,7 +371,7 @@ Resources:
         ZipFile: |
           # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
           # SPDX-License-Identifier: MIT-0
-          # Description: (v2024-03-21) Amazon Connect Integration with Amazon Q in Connect (Assistant and KnowledgeBase)
+          # Description: (2024-04-30) Amazon Connect Integration with Amazon Q in Connect (Assistant and KnowledgeBase)
 
           # Core Python Imports (Logging, HTTP). License: https://docs.python.org/3/license.html
           import json
@@ -562,7 +569,7 @@ Resources:
             Action:
               - 'sts:AssumeRole'
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: GetQueueInfoPolicy
           PolicyDocument:

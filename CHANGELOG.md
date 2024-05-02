@@ -3,6 +3,11 @@
 ## 2024-MM-DD - ROADMAP
 - Develop and Integrate Amazon Q in Connect Quick Responses Integration
 
+## 2024-05-02 - Update QConnectIntegrationRole
+- Added `kms:CreateGrant` permission to `QConnectIntegrationRole` IAM Role. 
+  - This is to allow for the Integration Association of the Amazon Connect Instance with a QConnect Assistant and KnowledgeBase.
+- Updated `amazon-q-in-connect-s3-integration-template.yaml` to use ${AWS::Partition} instead of 'aws' in ARN definitions.
+
 ## 2024-03-22 - Open Source Release
 - Project Name: `amazon-q-in-connect-s3-integration-template`
 - GitHub URL: https://github.com/aws-samples/amazon-q-in-connect-s3-integration-template 
