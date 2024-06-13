@@ -146,7 +146,7 @@ Resources:
         RestrictPublicBuckets: True 
       # (Optional) Enabling Amazon S3 Bucket Versioning is a best practice to ensure bucket objects can be reverted. (QIC UpdateContent API call can reference version to function correctly.)
       VersioningConfiguration: 
-        Status: Enabled # Suspended | Enabled
+        Status: Suspended # Suspended | Enabled
       # Bucket Encryption Docs: https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingServerSideEncryption.html
       BucketEncryption:
         ServerSideEncryptionConfiguration:
